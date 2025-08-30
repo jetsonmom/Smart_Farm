@@ -1,5 +1,3 @@
-//  5시에서 저녁9시  작동
-//
 #include <WiFi.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -22,7 +20,7 @@ const int DHT11_PIN = 2;                // DHT11 온습도 센서
 
 // DHT11 센서 및 LCD 초기화
 SimpleDHT11 dht11(DHT11_PIN);
-LiquidCrystal_I2C lcd(0x27, 20, 4);     // 20x4 LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);     // 16x2 LCD
 
 // 릴레이 제어 상수 (각 핀별로 개별 설정)
 // 7번 핀 - 쿨링팬 릴레이
@@ -202,7 +200,6 @@ void updateLCD(int hour, int minute, int second) {
         
         // 첫 번째 줄: 시간
         lcd.setCursor(0, 0);
-        lcd.print("Time: ");
         if (hour < 10) lcd.print("0");
         lcd.print(hour);
         lcd.print(":");
@@ -212,27 +209,28 @@ void updateLCD(int hour, int minute, int second) {
         if (second < 10) lcd.print("0");
         lcd.print(second);
         
-        // 두 번째 줄: 온도
-        lcd.setCursor(0, 1);
-        lcd.print("Temp: ");
+        // 온도/습도 표시 (첫 번째 줄 우측)
+        lcd.setCursor(9, 0);
         lcd.print((int)temperature);
-        lcd.print("C");
-        
-        // 세 번째 줄: 습도
-        lcd.setCursor(0, 2);
-        lcd.print("Humidity: ");
+        lcd.print("C ");
         lcd.print((int)humidity);
         lcd.print("%");
         
-        // 네 번째 줄: 상태 표시
-        lcd.setCursor(0, 3);
-        String status = "";
-        if (digitalRead(PLANT_LED_PIN) == PIN6_ON) status += "L";
-        if (digitalRead(INTERNAL_FAN_PIN) == PIN7_ON) status += "F";
-        if (digitalRead(GROWTH_PUMP_PIN) == PIN4_ON) status += "G";
-        if (digitalRead(GERMINATION_PUMP_PIN) == PIN5_ON) status += "S";
-        if (status == "") status = "ALL OFF";
-        lcd.print("Status: " + status);
+        // 두 번째 줄: 상태 표시
+        lcd.setCursor(0, 1);
+        
+        // 오후 9시 이후 체크
+        if (hour >= 21 || hour < 5) {
+            lcd.print("NIGHT MODE");
+        } else {
+            String status = "";
+            if (digitalRead(PLANT_LED_PIN) == PIN6_ON) status += "L";
+            if (digitalRead(INTERNAL_FAN_PIN) == PIN7_ON) status += "F";
+            if (digitalRead(GROWTH_PUMP_PIN) == PIN4_ON) status += "G";
+            if (digitalRead(GERMINATION_PUMP_PIN) == PIN5_ON) status += "S";
+            if (status == "") status = "ALL OFF";
+            lcd.print("Status: " + status);
+        }
         
         lastLCDUpdate = millis();
     }
@@ -255,8 +253,21 @@ void controlLED(int hour) {
     }
 }
 
-void controlPumps(int minute) {
-    // 디버깅 출력
+void controlPumps(int minute, int hour) {
+    // 오후 9시부터 오전 5시까지는 펌프 작동 안 함 (야간 모드)
+    if (hour >= 21 || hour < 5) {
+        // 야간 모드: 모든 펌프와 팬 OFF
+        if (pumpRunning) {
+            digitalWrite(INTERNAL_FAN_PIN, PIN7_OFF);
+            digitalWrite(GROWTH_PUMP_PIN, PIN4_OFF);
+            digitalWrite(GERMINATION_PUMP_PIN, PIN5_OFF);
+            Serial.println("야간 모드: 모든 펌프 및 팬 정지");
+            pumpRunning = false;
+        }
+        return;
+    }
+    
+    // 디버깅 출력 (주간 모드에서만)
     static int lastDebugMinute = -1;
     if (minute != lastDebugMinute) {
         Serial.print("펌프 체크 - 현재 분: ");
@@ -268,9 +279,9 @@ void controlPumps(int minute) {
         lastDebugMinute = minute;
     }
     
-    // 매시 0분에 워터펌프 동작 시작
+    // 주간 모드(5:00-21:00)에서만 매시 0분에 워터펌프 동작 시작
     if (minute == 0 && lastMinute != 0 && !pumpRunning) {
-        Serial.println("=== 워터펌프 사이클 시작 ===");
+        Serial.println("=== 워터펌프 사이클 시작 (주간 모드) ===");
         
         // 모든 펌프와 팬 동시 시작
         digitalWrite(INTERNAL_FAN_PIN, PIN7_ON);
@@ -285,18 +296,18 @@ void controlPumps(int minute) {
         Serial.println("발아용 펌프 시작 (1분간)");
     }
     
-    // 펌프 동작 시간 제어
+    // 펌프 동작 시간 제어 (주간 모드에서만)
     if (pumpRunning) {
         unsigned long elapsed = millis() - pumpStartTime;
         
         // 1분 후 발아용 펌프 OFF
-        if (elapsed >= 120000 && digitalRead(GERMINATION_PUMP_PIN) == PIN5_ON) {
+        if (elapsed >= 60000 && digitalRead(GERMINATION_PUMP_PIN) == PIN5_ON) {
             digitalWrite(GERMINATION_PUMP_PIN, PIN5_OFF);
             Serial.println("발아용 펌프 정지 (1분 완료)");
         }
         
         // 2분 20초 후 성장용 펌프 OFF
-        if (elapsed >= 240000 && digitalRead(GROWTH_PUMP_PIN) == PIN4_ON) {
+        if (elapsed >= 140000 && digitalRead(GROWTH_PUMP_PIN) == PIN4_ON) {
             digitalWrite(GROWTH_PUMP_PIN, PIN4_OFF);
             Serial.println("성장용 펌프 정지 (2분20초 완료)");
         }
@@ -349,15 +360,45 @@ void loop() {
             Serial.print(second);
             Serial.print(" (lastMinute: ");
             Serial.print(lastMinute);
-            Serial.println(")");
+            if (hour >= 21 || hour < 5) {
+                Serial.print(") - 야간 모드");
+            } else {
+                Serial.print(") - 주간 모드");
+            }
+            Serial.println();
             lastTimeDisplay = millis();
         }
         
-        // LED 제어
-        controlLED(hour);
-        
-        // 펌프 제어
-        controlPumps(minute);
+        // 시간대별 제어
+        if (hour >= 21 || hour < 5) {
+            // 야간 모드 (오후 9시 ~ 오전 5시): 모든 장치 OFF
+            static bool nightModeActivated = false;
+            if (!nightModeActivated) {
+                digitalWrite(INTERNAL_FAN_PIN, PIN7_OFF);
+                digitalWrite(GROWTH_PUMP_PIN, PIN4_OFF);
+                digitalWrite(GERMINATION_PUMP_PIN, PIN5_OFF);
+                digitalWrite(PLANT_LED_PIN, PIN6_OFF);
+                Serial.println("=== 야간 모드 활성화: 모든 장치 OFF ===");
+                pumpRunning = false; // 펌프 사이클 강제 종료
+                nightModeActivated = true;
+            }
+        } else {
+            // 주간 모드 (오전 5시 ~ 오후 9시): 정상 동작
+            static bool dayModeActivated = false;
+            if (!dayModeActivated) {
+                Serial.println("=== 주간 모드 활성화: 정상 동작 시작 ===");
+                dayModeActivated = true;
+            }
+            
+            // LED 제어
+            controlLED(hour);
+            
+            // 펌프 제어 (시간 정보 추가)
+            controlPumps(minute, hour);
+            
+            // 야간 모드 플래그 리셋
+            static bool nightModeActivated = false;
+        }
         
     } else {
         // WiFi 미연결시 안전 모드
@@ -371,17 +412,12 @@ void loop() {
         // WiFi 미연결 시 LCD 표시
         lcd.clear();
         lcd.setCursor(0, 0);
-        lcd.print("WiFi Disconnected");
+        lcd.print("WiFi Disconnect");
         lcd.setCursor(0, 1);
-        lcd.print("Reconnecting...");
-        lcd.setCursor(0, 2);
-        lcd.print("Temp: ");
         lcd.print((int)temperature);
-        lcd.print("C");
-        lcd.setCursor(0, 3);
-        lcd.print("Humidity: ");
+        lcd.print("C ");
         lcd.print((int)humidity);
-        lcd.print("%");
+        lcd.print("% Reconnect");
     }
     
     // 제트슨 나노에 상태 전송 (5초마다)
