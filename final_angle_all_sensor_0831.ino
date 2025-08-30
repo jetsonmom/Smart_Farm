@@ -1,3 +1,5 @@
+//8월 30일 저장한 코드가 아침에 LED가 켜지지 않아서 수정함  마지막 버전이고 final_angle로 저장도 함
+
 #include <WiFi.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
